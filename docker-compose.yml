@@ -1,0 +1,92 @@
+# Blood Bank Management System - microservices stack.
+#
+# MySQL is NOT started by this file on purpose: the brief requires that local
+# development keep using the existing MySQL database exactly as it is
+# (blood_bank_db_corrected.sql, already set up in MySQL Workbench). Every
+# backend service instead reaches OUT to that existing MySQL server running on
+# your host machine, via host.docker.internal. See README.md "Docker setup"
+# for the one-time host firewall/bind-address note MySQL needs for this to work.
+#
+# MongoDB, on the other hand, IS started by this file (notification-service's
+# activity/events/notifications store) since there is no pre-existing Mongo
+# instance to preserve.
+services:
+  mongo:
+    image: mongo:7
+    restart: unless-stopped
+    volumes:
+      - mongo-data:/data/db
+    ports:
+      - "27017:27017"
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping')"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  auth-service:
+    build: ./services/auth-service
+    restart: unless-stopped
+    env_file: ./services/auth-service/.env
+    environment:
+      DB_HOST: host.docker.internal
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "4001:4001"
+
+  core-service:
+    build: ./services/core-service
+    restart: unless-stopped
+    env_file: ./services/core-service/.env
+    environment:
+      DB_HOST: host.docker.internal
+      NOTIFICATION_SERVICE_URL: http://notification-service:4003
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      notification-service:
+        condition: service_started
+    ports:
+      - "4002:4002"
+
+  notification-service:
+    build: ./services/notification-service
+    restart: unless-stopped
+    env_file: ./services/notification-service/.env
+    environment:
+      MONGO_URI: mongodb://mongo:27017/blood_bank_events
+    depends_on:
+      mongo:
+        condition: service_healthy
+    ports:
+      - "4003:4003"
+
+  api-gateway:
+    build: ./services/api-gateway
+    restart: unless-stopped
+    env_file: ./services/api-gateway/.env
+    environment:
+      AUTH_SERVICE_URL: http://auth-service:4001
+      CORE_SERVICE_URL: http://core-service:4002
+      NOTIFICATION_SERVICE_URL: http://notification-service:4003
+    depends_on:
+      - auth-service
+      - core-service
+      - notification-service
+    ports:
+      - "4000:4000"
+
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        VITE_API_BASE_URL: http://localhost:4000/api
+    restart: unless-stopped
+    depends_on:
+      - api-gateway
+    ports:
+      - "5173:80"
+
+volumes:
+  mongo-data:
